@@ -13,3 +13,4 @@ coverage/
 *.inspect.ndjson
 
 .vercel
+.env*
