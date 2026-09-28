@@ -16,11 +16,13 @@ import { createIntegrationHub } from "./integrations.js";
 const root = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(root, "public");
 const uiFontPath = join(root, "node_modules", "@fontsource-variable", "plus-jakarta-sans", "files", "plus-jakarta-sans-latin-wght-normal.woff2");
+const IS_VERCEL = Boolean(process.env.VERCEL || process.env.VERCEL_REGION);
 
 loadEnvFile(join(root, ".env"));
 loadEnvFile(join(root, ".env.local"));
 
-const dataDir = process.env.AIHR_DATA_DIR || join(root, "data");
+// Vercel functions can only write to /tmp. Durable deployments should set DATABASE_URL.
+const dataDir = process.env.AIHR_DATA_DIR || (IS_VERCEL ? "/tmp/ai-hr-data" : join(root, "data"));
 const PORT = Number(process.env.PORT || 3000);
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
@@ -644,32 +646,38 @@ if (process.env.AIHR_IMPORT_JSON === "true") {
   const imported = await storage.importJsonIfEmpty();
   if (imported.imported) console.log(`Imported ${imported.records} records from JSON into PostgreSQL.`);
 }
-const workflowTimer = setInterval(() => void processScheduledWorkflows().catch(console.error), 30_000);
-workflowTimer.unref();
+const workflowTimer = IS_VERCEL
+  ? null
+  : setInterval(() => void processScheduledWorkflows().catch(console.error), 30_000);
+workflowTimer?.unref();
 
-server.on("error", (error) => {
-  if (error.code === "EADDRINUSE") {
-    console.log(`AI HR is already running at http://localhost:${PORT}. Open that address instead of starting another copy.`);
-    process.exit(0);
-  }
-  console.error(error);
-  process.exit(1);
-});
+if (!IS_VERCEL) {
+  server.on("error", (error) => {
+    if (error.code === "EADDRINUSE") {
+      console.log(`AI HR is already running at http://localhost:${PORT}. Open that address instead of starting another copy.`);
+      process.exit(0);
+    }
+    console.error(error);
+    process.exit(1);
+  });
 
-server.listen(PORT, () => {
-  console.log(`AI HR running at http://localhost:${PORT}`);
-});
+  server.listen(PORT, () => {
+    console.log(`AI HR running at http://localhost:${PORT}`);
+  });
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+}
 
 function shutdown() {
-  clearInterval(workflowTimer);
+  if (workflowTimer) clearInterval(workflowTimer);
   server.close(async () => {
     await storage.close();
     process.exit(0);
   });
 }
+
+export default server;
 
 async function handleAuthMe(req, res) {
   const store = await readStore();
